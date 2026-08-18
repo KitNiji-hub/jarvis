@@ -255,6 +255,145 @@ def _select_llm(
     missing or partial (e.g. location failed to resolve) — the router simply
     has less context and falls back to tool-selection on content.
     """
+    # KITNIJI DETERMINISTIC NO TOOL FASTPATH
+    # Literal response-formatting requests need no external information.
+    # Keep this deliberately narrow so factual/tool-dependent queries
+    # still reach the normal LLM router.
+    _fast_q = " ".join(query.strip().lower().split())
+    _literal_response_patterns = (
+        r"^(?:please\s+)?say\s+only\s+(?:the\s+)?(?:word|phrase)\s+.+$",
+        r"^(?:please\s+)?(?:reply|respond|answer)\s+only\s+with\s+(?:the\s+)?(?:word|phrase)\s+.+$",
+        r"^(?:please\s+)?repeat\s+(?:after\s+me\s+)?(?:the\s+)?(?:word|phrase)\s+.+$",
+    )
+    if any(re.match(pattern, _fast_q) for pattern in _literal_response_patterns):
+        debug_log(
+            f"Deterministic no-tool fastpath: {query!r}",
+            "planning",
+        )
+        return [
+            t for t in _ALWAYS_INCLUDED
+            if t in builtin_tools or t in mcp_tools
+        ]
+
+    # KITNIJI STABLE KNOWLEDGE FASTPATH
+    # Skip the LLM router for clearly timeless explanatory questions.
+    # This is intentionally conservative: anything suggesting current,
+    # personal, external, screen, file, or web data still uses the router.
+    _knowledge_q = " ".join(query.strip().lower().split())
+
+    # KITNIJI KNOWLEDGE PREFIX NORMALIZATION
+    # Normalize harmless conversational lead-ins for classification only.
+    # The original user query remains unchanged for the answering model.
+    _knowledge_match_q = re.sub(
+        r"^(?:(?:okay|ok|well|hey|um|uh)\s*[,.-]?\s+)+",
+        "",
+        _knowledge_q,
+    ).strip()
+
+    # In "tell me the concept of X", "me" is grammatical rather than
+    # a request for personal memory. Strip only that narrow prefix for
+    # the personal-context safety test.
+    _knowledge_safety_q = re.sub(
+        r"^(?:please\s+)?tell\s+me\s+",
+        "",
+        _knowledge_match_q,
+    ).strip()
+
+
+    _knowledge_patterns = (
+        # KITNIJI ASR KNOWLEDGE VARIANTS
+        # Whisper may turn imperative verbs into past tense, e.g.
+        # "explain" -> "explained". Treat those as the same stable
+        # knowledge intent for routing purposes.
+        r"^(?:please\s+)?(?:explain|explained|define|defined)\b.+$",
+        r"^(?:please\s+)?tell\s+me\s+(?:the\s+)?concept\s+of\b.+$",
+        r"^(?:please\s+)?why\b.+$",
+        r"^(?:please\s+)?how\s+(?:does|do|did|can|could|would|is|are)\b.+$",
+        r"^(?:please\s+)?what\s+(?:is|are|does|do|did)\b.+$",
+    )
+
+    _external_or_dynamic = re.search(
+        r"\b(?:today|tonight|tomorrow|yesterday|current|currently|latest|recent|recently|now|"
+        r"weather|forecast|temperature|news|price|cost|stock|market|score|schedule|"
+        r"search|lookup|web|internet|screenshot|screen|display|window|browser|"
+        r"file|folder|document|pdf|email|gmail|calendar|appointment|remind|reminder|"
+        r"nearby|location|directions|president|governor|mayor|senator|ceo)\b",
+        _knowledge_q,
+    )
+
+    _personal_context = re.search(
+        r"\b(?:my|mine|me|i|we|our|ours)\b",
+        _knowledge_safety_q,
+    )
+
+    _explicit_tool_phrase = any(
+        phrase in _knowledge_q
+        for phrase in (
+            "look up",
+            "find online",
+            "on my screen",
+            "on the screen",
+            "take a screenshot",
+            "check my",
+            "near me",
+        )
+    )
+
+    _looks_like_stable_knowledge = any(
+        re.match(pattern, _knowledge_match_q)
+        for pattern in _knowledge_patterns
+    )
+
+    if (
+        _looks_like_stable_knowledge
+        and not _external_or_dynamic
+        and not _personal_context
+        and not _explicit_tool_phrase
+    ):
+        debug_log(
+            f"Stable knowledge no-tool fastpath: {query!r}",
+            "planning",
+        )
+        return [
+            t for t in _ALWAYS_INCLUDED
+            if t in builtin_tools or t in mcp_tools
+        ]
+
+    # KITNIJI DETERMINISTIC WEATHER ROUTE
+    _weather_q = " ".join(query.strip().lower().split())
+    if re.search(
+        r"\b(?:weather|forecast|temperature|temperatures|climate|conditions)\b",
+        _weather_q,
+    ) and "getWeather" in builtin_tools:
+        debug_log(
+            f"Deterministic weather route: {query!r}",
+            "planning",
+        )
+        selected = ["getWeather"]
+        return _ensure_always_included(
+            selected, builtin_tools, mcp_tools
+        )
+
+    # KITNIJI DETERMINISTIC SCREENSHOT ROUTE
+    # Explicit screen-capture requests do not need an LLM router pass.
+    _screenshot_q = " ".join(query.strip().lower().split())
+    _explicit_screenshot = (
+        "screenshot" in _screenshot_q
+        or bool(re.search(
+            r"\b(?:take|capture|grab)\b.{0,30}\b(?:screen|display|monitor)\b",
+            _screenshot_q,
+        ))
+    )
+    if _explicit_screenshot and "screenshot" in builtin_tools:
+        debug_log(
+            f"Deterministic screenshot route: {query!r}",
+            "planning",
+        )
+        selected = ["screenshot"]
+        return _ensure_always_included(
+            selected, builtin_tools, mcp_tools
+        )
+
     catalogue_lines: List[str] = []
     for name, tool in builtin_tools.items():
         if name in _ALWAYS_INCLUDED:
@@ -269,16 +408,26 @@ def _select_llm(
         "pick AT MOST the 5 most relevant tools for the query and return ONLY a "
         "comma-separated list of their exact names. Prefer fewer (1-3) when the "
         "query is clearly about one thing; never return more than 5. "
-        "Return 'none' ONLY for pure greetings/small talk OR when the exact "
+        "Return 'none' for pure greetings/small talk, stable general-knowledge questions, OR when the exact "
         "fact needed is already visible in the KNOWN FACTS block below. If "
         "the query depends on data NOT in KNOWN FACTS — the user's logs, "
         "current conditions, web info, files, screen — pick a tool, even "
         "when the phrasing is indirect ('should I order pizza?' → needs the "
         "meal log; 'do I need a jacket?' → needs the weather). Do NOT pick a "
         "tool merely because its domain is loosely adjacent. "
-        "If the query asks for DETAILED information on a topic (articles, "
-        "explanations, write-ups), include BOTH a search tool AND a page-fetch "
-        "tool so the model can follow the chain. "
+        # KITNIJI ROUTER RESPONSE FASTPATH
+        "IMPORTANT EXCEPTION TO ANY 'none' RULE ABOVE: response-formatting "
+        "requests such as 'say X', 'reply with X', 'answer only X', or "
+        "'repeat X' require NO external tool. Return 'none' unless the "
+        "requested content itself actually requires external data. "
+        "Choose screenshot ONLY when the user explicitly asks to take or "
+        "capture a screenshot, inspect/read/describe something currently "
+        "visible on the screen, or perform a UI task that requires seeing "
+        "the screen. Never choose screenshot merely because the user asks "
+        "you to say, reply, answer, explain, or format a response. "
+        "Do NOT select webSearch or fetchWebPage merely because the user asks for "
+        "an explanation, definition, or why/how question about stable knowledge. "
+        "Use search plus page-fetch when freshness or source verification is actually needed. "
         "If a RECENT DIALOGUE block is present, read the current query as a "
         "continuation of that dialogue: a short follow-up (e.g. naming a "
         "place, confirming an option, answering a clarifying question the "

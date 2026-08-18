@@ -65,6 +65,7 @@ from ..tools.selection import select_tools, ToolSelectionStrategy
 import json
 import re
 import uuid
+import time
 from datetime import datetime, timezone
 from ..utils.location import get_location_context_with_timezone
 from ..utils.time_context import format_time_context
@@ -967,10 +968,35 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # router output, so this never poisons the cache.
     routed_tools = list(routed_tools or [])
     _carryover_names: list[str] = []
+    # KITNIJI SCREENSHOT CARRYOVER GUARD
+    # A failed screenshot should carry into a follow-up only when the
+    # new utterance still clearly refers to screen capture or a screen
+    # region. This prevents an unrelated new question from inheriting
+    # screenshot merely because the previous screenshot tool failed.
+    _carryover_query = redacted.lower().strip() if redacted else ""
     if recent_messages:
         for _name in _previous_turn_failed_tool_names(recent_messages):
-            if _name in _full_catalog_names and _name not in routed_tools:
+            _carryover_ok = True
+            if _name == "screenshot":
+                _carryover_ok = bool(re.search(
+                    r"\b(?:screenshot|screen|display|monitor|window|capture|"
+                    r"left side|right side|top half|bottom half|whole screen|"
+                    r"full screen|entire screen)\b",
+                    _carryover_query,
+                ))
+                if not _carryover_ok:
+                    debug_log(
+                        "tool carry-over: suppressed stale screenshot on unrelated query",
+                        "planning",
+                    )
+
+            if (
+                _carryover_ok
+                and _name in _full_catalog_names
+                and _name not in routed_tools
+            ):
                 _carryover_names.append(_name)
+
         if _carryover_names:
             routed_tools = routed_tools + _carryover_names
             debug_log(
@@ -1006,23 +1032,82 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # longer tool-free queries that might need memory still reach the
     # planner for a `searchMemory` directive. Language-agnostic: word count
     # splits on whitespace, which works for every script-separated language.
+    _real_routed_tools = [
+        name for name in (routed_tools or [])
+        if name not in {"stop", "toolSearchTool"}
+    ]
     _router_said_no_tools = (
         routed_tools is not None
-        and len(routed_tools) <= 1
-        and ("stop" in routed_tools or not routed_tools)
+        and len(_real_routed_tools) == 0
     )
     _query_word_count = len(redacted.split()) if redacted else 0
+    # KITNIJI SINGLE WEATHER PLANNER FASTPATH
+    # A deterministic one-tool weather route does not need a second
+    # LLM planner pass. Keep obvious historical-weather wording on
+    # the normal planner path so memory/research logic can still act.
+    _single_weather_route = (
+        _real_routed_tools == ["getWeather"]
+        and not re.search(
+            r"\b(?:yesterday|last|previous|ago|historical|history|was|were)\b",
+            redacted.lower(),
+        )
+    )
+
+    # KITNIJI SINGLE SCREENSHOT PLANNER FASTPATH
+    # A deterministic screenshot route needs no LLM planner pass.
+    # Unlike reply-only fastpaths, preserve the screenshot as an
+    # explicit tool step so the chat model cannot merely claim that
+    # a screenshot was taken without actually invoking the tool.
+    _single_screenshot_route = (
+        _real_routed_tools == ["screenshot"]
+    )
+
+    # KITNIJI CAPTURE ONLY SCREENSHOT FASTPATH
+    # Plain capture commands need no final LLM synthesis. More complex
+    # screenshot requests still execute the screenshot and then continue
+    # to the chat model for interpretation.
+    _capture_only_q = re.sub(
+        r"[^a-z0-9\s]",
+        " ",
+        redacted.lower() if redacted else "",
+    )
+    _capture_only_q = " ".join(_capture_only_q.split())
+
+    _capture_only_screenshot_route = (
+        _single_screenshot_route
+        and bool(re.fullmatch(
+            r"(?:hey\s+)?(?:please\s+)?"
+            r"(?:take|capture|grab)\s+"
+            r"(?:(?:a|the)\s+)?"
+            r"(?:screenshot|screen)"
+            r"(?:\s+for\s+me)?",
+            _capture_only_q,
+        ))
+    )
+
     _skip_planner = (
-        _router_said_no_tools
-        and _query_word_count <= 8
-        and getattr(cfg, "planner_enabled", True)
+        getattr(cfg, "planner_enabled", True)
+        and (
+            (
+                _router_said_no_tools
+                and _query_word_count <= 12
+            )
+            or _single_weather_route
+            or _single_screenshot_route
+        )
     )
     if _skip_planner:
         # Positive signal: no tools, no memory needed. The warm profile
         # (injected unconditionally below) provides user-context for the
         # chat model; memory enrichment is skipped as if the planner had
         # emitted a single "Reply to the user." step.
-        action_plan = ["Reply to the user."]
+        if _single_screenshot_route:
+            action_plan = [
+                "screenshot",
+                "Reply to the user with the screenshot result.",
+            ]
+        else:
+            action_plan = ["Reply to the user."]
         debug_log(
             f"planner skipped: router returned no tools, query is "
             f"{_query_word_count} words — using reply-only plan",
@@ -1832,8 +1917,13 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         # a final reply from the accumulated results.
         # See planner.spec.md.
         _plan_tool_steps = tool_steps_of(action_plan)
+        # KITNIJI NATIVE SCREENSHOT DIRECT EXEC
+        # The generic direct-exec path normally targets SMALL/text-tool
+        # models. A deterministic screenshot plan is also safe to execute
+        # directly for native-tool models because the tool and arguments
+        # are already known with certainty.
         if (
-            use_text_tools
+            (use_text_tools or _single_screenshot_route)
             and _plan_tool_steps
             and not _plan_under_specified
         ):
@@ -1952,15 +2042,27 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                                 )
                             else:
                                 _plan_hint = ""
-                            messages.append({
-                                "role": "user",
-                                "content": (
-                                    f"[Tool result: {_name}]\n"
-                                    f"{_plan_text}{_plan_hint}"
-                                ),
-                                "tool_name": _name,
-                                "tool_failed": not _plan_result.success,
-                            })
+                            if use_text_tools:
+                                messages.append({
+                                    "role": "user",
+                                    "content": (
+                                        f"[Tool result: {_name}]\n"
+                                        f"{_plan_text}{_plan_hint}"
+                                    ),
+                                    "tool_name": _name,
+                                    "tool_failed": not _plan_result.success,
+                                })
+                            else:
+                                # Native tool history must pair the synthetic
+                                # assistant tool_call above with role=tool and
+                                # the same tool_call_id.
+                                messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": _plan_call_id,
+                                    "tool_name": _name,
+                                    "content": f"{_plan_text}{_plan_hint}",
+                                    "tool_failed": not _plan_result.success,
+                                })
                             recent_tool_signatures.append(_cand_sig)
                             if len(recent_tool_signatures) > 5:
                                 recent_tool_signatures = (
@@ -1970,6 +2072,25 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                                 (_name, _cand_sig[1], _plan_text)
                             )
                             _plan_exec_handled = True
+
+                            if _capture_only_screenshot_route:
+                                if _plan_result.success:
+                                    reply = "Screenshot captured."
+                                else:
+                                    _capture_err = (
+                                        _plan_result.error_message
+                                        or "Screenshot capture failed."
+                                    )
+                                    reply = (
+                                        "I couldn't capture the screenshot: "
+                                        + _capture_err
+                                    )
+
+                                debug_log(
+                                    "capture-only screenshot: skipping final LLM synthesis",
+                                    "planning",
+                                )
+                                break
                         else:
                             debug_log(
                                 f"planner: rejected plan step exec "
@@ -2428,6 +2549,17 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                         "tool_failed": True,
                     })
                 debug_log(f"    ❌ tool error: {err}", "planning")
+            # KITNIJI FAILED TOOL SIGNATURE GUARD
+            # Failed calls must be remembered too. Otherwise the model can
+            # emit the exact same tool + args on the next loop iteration
+            # and the duplicate guard above will execute it again.
+            try:
+                recent_tool_signatures.append(signature)
+                if len(recent_tool_signatures) > 5:
+                    recent_tool_signatures = recent_tool_signatures[-5:]
+            except Exception:
+                pass
+
             # Loop continues to let the agent produce the next step/final reply
             continue
 
@@ -2513,6 +2645,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     if not safe_reply:
         safe_reply = "Sorry, I had trouble processing that. Could you try again?"
         reply = safe_reply
+
     if safe_reply:
         # Print reply with appropriate header
         try:

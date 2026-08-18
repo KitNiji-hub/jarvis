@@ -761,6 +761,12 @@ class VoiceListener(threading.Thread):
             or is_speaking_now
         )
 
+        # KITNIJI EXPLICIT WAKE FASTPATH
+        _explicit_wake_fastpath = (
+            self._wake_timestamp is not None
+            and not could_be_hot_window
+            and not is_speaking_now
+        )
         if not has_engagement_signal:
             debug_log(
                 f"skipping intent judge — no wake word, no hot window, no TTS "
@@ -769,7 +775,8 @@ class VoiceListener(threading.Thread):
             )
 
         if (
-            not skip_intent_judge_during_tts
+            not _explicit_wake_fastpath
+            and not skip_intent_judge_during_tts
             and has_engagement_signal
             and self._intent_judge is not None
             and self._intent_judge.available

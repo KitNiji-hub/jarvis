@@ -455,7 +455,7 @@ def plan_query(
     # Planning runs on the CHAT tier: the plan is the scaffolding the chat
     # model then follows, so the two must be matched — a weaker planner on a
     # stronger chat model produces scaffolding the chat model fights against.
-    model = resolve_model(cfg, Tier.CHAT)
+    model = resolve_model(cfg, Tier.FAST)
     if not model:
         return []
 
@@ -738,7 +738,7 @@ def resolve_next_tool_call(
         )
         return fast
 
-    model = resolve_model(cfg, Tier.CHAT)
+    model = resolve_model(cfg, Tier.FAST)
     if not model:
         return None
 

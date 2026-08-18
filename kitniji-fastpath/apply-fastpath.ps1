@@ -5,6 +5,8 @@ param(
 $ErrorActionPreference = "Stop"
 $RepoPath = (Resolve-Path $RepoPath).Path
 
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
 function Backup-File {
     param([string]$FullPath)
     $backup = "$FullPath.kitniji-backup"
@@ -26,7 +28,10 @@ function Replace-Exact {
         throw "Missing file: $full"
     }
 
-    $text = Get-Content $full -Raw
+    # Explicit UTF-8 read/write is required on Windows PowerShell 5.1.
+    # Get-Content defaults to the legacy Windows code page for UTF-8 files
+    # without a BOM and would corrupt Unicode punctuation in Jarvis sources.
+    $text = [System.IO.File]::ReadAllText($full, [System.Text.Encoding]::UTF8)
 
     if ($text.Contains($New)) {
         Write-Host "Already applied: $Label" -ForegroundColor DarkYellow
@@ -39,11 +44,7 @@ function Replace-Exact {
 
     Backup-File $full
     $text = $text.Replace($Old, $New)
-
-    # Write UTF-8 without BOM. This script itself intentionally stays ASCII-only
-    # so Windows PowerShell 5.1 cannot misparse UTF-8 punctuation as smart quotes.
-    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($full, $text, $utf8NoBom)
+    [System.IO.File]::WriteAllText($full, $text, $script:Utf8NoBom)
     Write-Host "Applied: $Label" -ForegroundColor Green
 }
 

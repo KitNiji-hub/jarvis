@@ -40,10 +40,10 @@ function Replace-Exact {
     Backup-File $full
     $text = $text.Replace($Old, $New)
 
-    # Windows PowerShell 5.1 handles ASCII source reliably. The Jarvis Python
-    # files themselves remain UTF-8; this patcher intentionally contains only
-    # ASCII characters so script parsing cannot be broken by mojibake.
-    [System.IO.File]::WriteAllText($full, $text, (New-Object System.Text.UTF8Encoding($false)))
+    # Write UTF-8 without BOM. This script itself intentionally stays ASCII-only
+    # so Windows PowerShell 5.1 cannot misparse UTF-8 punctuation as smart quotes.
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($full, $text, $utf8NoBom)
     Write-Host "Applied: $Label" -ForegroundColor Green
 }
 
@@ -55,7 +55,6 @@ try {
 
     $status = git status --porcelain
     if ($status) {
-        # Ignore only the backup files created by an earlier successful run.
         $meaningful = @($status | Where-Object { $_ -notmatch '\.kitniji-backup$' })
         if ($meaningful.Count -gt 0) {
             throw "Working tree is not clean. Commit/stash your changes before applying the fast path.`n$($meaningful -join "`n")"
@@ -64,29 +63,28 @@ try {
 
     Write-Host "Applying KitNiji Jarvis fast-path changes..." -ForegroundColor Cyan
 
-    # 1) Router: stable knowledge should be allowed to use no external tools.
+    # 1) Router: stable general knowledge should be allowed to use no external tools.
     $routerPath = "src/jarvis/tools/selection.py"
+
     Replace-Exact $routerPath `
         '        "Return ''none'' ONLY for pure greetings/small talk OR when the exact "' `
-        @'
-        "Return 'none' for pure greetings/small talk, stable general-knowledge "
-        "questions the main model can answer without external data, OR when the exact "
-'@ `
+        '        "Return ''none'' for pure greetings/small talk, stable general-knowledge questions, OR when the exact "' `
         "router: stable knowledge can return none"
 
     Replace-Exact $routerPath `
-        @'
-        "If the query asks for DETAILED information on a topic (articles, "
-        "explanations, write-ups), include BOTH a search tool AND a page-fetch "
-        "tool so the model can follow the chain. "
-'@ `
-        @'
-        "Do NOT select webSearch or fetchWebPage merely because the user asks for "
-        "an explanation, definition, or why/how question about stable knowledge. "
-        "If detailed information actually requires fresh data or source verification, "
-        "include BOTH a search tool AND a page-fetch tool so the model can follow the chain. "
-'@ `
-        "router: do not force web for explanations"
+        '        "If the query asks for DETAILED information on a topic (articles, "' `
+        '        "Do NOT select webSearch or fetchWebPage merely because the user asks for "' `
+        "router: explanations do not force web line 1"
+
+    Replace-Exact $routerPath `
+        '        "explanations, write-ups), include BOTH a search tool AND a page-fetch "' `
+        '        "an explanation, definition, or why/how question about stable knowledge. "' `
+        "router: explanations do not force web line 2"
+
+    Replace-Exact $routerPath `
+        '        "tool so the model can follow the chain. "' `
+        '        "Use search plus page-fetch when freshness or source verification is actually needed. "' `
+        "router: explanations do not force web line 3"
 
     # 2) Existing reply-only fast path: allow short stable questions up to 12 words.
     $enginePath = "src/jarvis/reply/engine.py"

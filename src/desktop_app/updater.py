@@ -248,123 +248,19 @@ def _make_release_info(release: dict, asset: dict) -> ReleaseInfo:
 
 
 def check_for_updates(channel: Optional[UpdateChannel] = None) -> UpdateStatus:
-    """Check GitHub Releases for available updates.
+    """Disable upstream automatic updates for the KitNiji custom build.
 
-    Args:
-        channel: Update channel to check. If None, uses current app's channel.
-
-    Returns:
-        UpdateStatus with update information.
+    This fork must not automatically replace itself with an official
+    isair/jarvis release.
     """
     current_version, current_channel = get_version()
 
-    if channel is None:
-        channel = (
-            UpdateChannel.DEVELOP
-            if current_channel == "develop"
-            else UpdateChannel.STABLE
-        )
-
-    try:
-        response = requests.get(
-            GITHUB_API_URL,
-            params={"per_page": 100},
-            headers={"Accept": "application/vnd.github.v3+json"},
-            timeout=10,
-        )
-        response.raise_for_status()
-        releases = response.json()
-
-        platform_asset_name = get_platform_asset_name()
-
-        if channel == UpdateChannel.DEVELOP:
-            target_release = None
-            for release in releases:
-                if release.get("draft", False):
-                    continue
-                if release.get("tag_name") != "latest":
-                    continue
-                for asset in release.get("assets", []):
-                    if asset["name"] == platform_asset_name:
-                        target_release = _make_release_info(release, asset)
-                        break
-                if target_release:
-                    break
-
-            if not target_release:
-                return UpdateStatus(
-                    update_available=False,
-                    current_version=current_version,
-                    current_channel=current_channel,
-                    latest_release=None,
-                )
-
-            # Compare the commit the installed build was stamped with against
-            # the commit the latest release was built from. Asset IDs are not
-            # a reliable "new build?" signal for develop: every CI run
-            # re-uploads the assets (fresh IDs even for the same commit) and a
-            # fresh install from the release page never records an asset ID —
-            # both used to make the update prompt appear on every startup.
-            # When either commit can't be determined, fall back to tracking
-            # the GitHub asset ID.
-            installed_commit = _extract_commit_from_version(current_version)
-            release_commit = _extract_commit_from_release_notes(
-                target_release.release_notes
-            )
-            if installed_commit and release_commit:
-                update_available = not release_commit.startswith(installed_commit)
-            else:
-                last_installed_id = get_last_installed_asset_id()
-                update_available = (
-                    last_installed_id is None
-                    or target_release.asset_id != last_installed_id
-                )
-            return UpdateStatus(
-                update_available=update_available,
-                current_version=current_version,
-                current_channel=current_channel,
-                latest_release=target_release,
-                releases_since_current=[target_release] if update_available else [],
-            )
-
-        # STABLE: collect every release newer than the current version so the
-        # dialog can show a full changelog spanning multiple skipped versions.
-        current_tuple = parse_version(current_version)
-        newer_releases: list[ReleaseInfo] = []
-        for release in releases:
-            if release.get("draft", False) or release.get("prerelease", False):
-                continue
-            for asset in release.get("assets", []):
-                if asset["name"] == platform_asset_name:
-                    if parse_version(release["tag_name"]) > current_tuple:
-                        newer_releases.append(_make_release_info(release, asset))
-                    break  # found the platform asset for this release
-
-        if not newer_releases:
-            return UpdateStatus(
-                update_available=False,
-                current_version=current_version,
-                current_channel=current_channel,
-                latest_release=None,
-            )
-
-        return UpdateStatus(
-            update_available=True,
-            current_version=current_version,
-            current_channel=current_channel,
-            latest_release=newer_releases[0],
-            releases_since_current=newer_releases,
-        )
-
-    except requests.RequestException as e:
-        debug_log(f"Failed to check for updates: {e}", "updater")
-        return UpdateStatus(
-            update_available=False,
-            current_version=current_version,
-            current_channel=current_channel,
-            latest_release=None,
-            error=str(e),
-        )
+    return UpdateStatus(
+        update_available=False,
+        current_version=current_version,
+        current_channel=current_channel,
+        latest_release=None,
+    )
 
 
 class DownloadSignals(QObject):

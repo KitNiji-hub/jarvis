@@ -1,10 +1,10 @@
-# KitNiji Jarvis
+# NijiJarvis
 
 A local-first Windows AI voice assistant fork of [isair/jarvis](https://github.com/isair/jarvis), focused on low-latency local operation, deterministic tool routing, privacy, and expanding Jarvis into a full personal assistant.
 
 > **Current development branch:** `kitniji/fast-pipeline`
 >
-> This fork is actively customized for Windows and local Ollama models. It is not an official release of the upstream Jarvis project.
+> NijiJarvis is actively customized for Windows and local Ollama models. It is not an official release of the upstream Jarvis project.
 
 ## What This Fork Changes
 
@@ -41,6 +41,6 @@ Automatic upstream application updates are intentionally disabled in the custom 
 
 ## Upstream Project
 
-This repository is based on the open-source [isair/jarvis](https://github.com/isair/jarvis) project. Original architecture, UI, and substantial portions of the codebase come from that project; this fork adds Windows-focused local optimizations and custom assistant behavior.
+NijiJarvis is based on the open-source [isair/jarvis](https://github.com/isair/jarvis) project. Original architecture, UI, and substantial portions of the codebase come from that project; this fork adds Windows-focused local optimizations and custom assistant behavior.
 
 For the original project documentation, features, setup instructions, and upstream development history, visit [isair/jarvis](https://github.com/isair/jarvis).

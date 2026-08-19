@@ -262,6 +262,7 @@ def _select_llm(
     _fast_q = " ".join(query.strip().lower().split())
     _literal_response_patterns = (
         r"^(?:please\s+)?say\s+only\s+(?:the\s+)?(?:word|phrase)\s+.+$",
+        r"^(?:please\s+)?only\s+say\s+(?:the\s+)?(?:word|phrase)\s+.+$",
         r"^(?:please\s+)?(?:reply|respond|answer)\s+only\s+with\s+(?:the\s+)?(?:word|phrase)\s+.+$",
         r"^(?:please\s+)?repeat\s+(?:after\s+me\s+)?(?:the\s+)?(?:word|phrase)\s+.+$",
     )

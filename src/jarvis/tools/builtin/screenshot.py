@@ -60,7 +60,7 @@ class ScreenshotTool(Tool):
     ) -> ToolExecutionResult:
         """Capture the screen and return OCR text."""
 
-        context.user_print("?? Capturing a screenshot for OCR?")
+        context.user_print("Capturing a screenshot for OCR...")
         debug_log("screenshot: capturing OCR...", "screenshot")
 
         tmpdir = tempfile.mkdtemp(prefix="jarvis_ocr_")
@@ -130,7 +130,7 @@ class ScreenshotTool(Tool):
                 f"screenshot: captured=True ocr_chars={len(ocr_text)}",
                 "screenshot",
             )
-            context.user_print("? Screenshot processed.")
+            context.user_print("Screenshot processed.")
 
             # Never return an empty successful result. The engine can then
             # distinguish a valid capture with no readable text from a
